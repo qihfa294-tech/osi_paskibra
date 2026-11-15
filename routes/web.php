@@ -26,6 +26,8 @@ Route::get('/register/{token}', [RegisterController::class, 'showRegisterForm'])
 Route::post('/register/{token}', [RegisterController::class, 'register'])->name('register.submit');
 
 Route::middleware('auth')->group(function(){
+    Route::post('/profil/update', [App\Http\Controllers\ProfileController::class, 'update'])->name('profil.update');
+
     Route::get('/dashboard', function(){
         $role = (int)auth()->user()->role_id;
         return match($role){

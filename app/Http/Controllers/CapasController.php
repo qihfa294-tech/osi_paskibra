@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/CapasController.php
 
 namespace App\Http\Controllers;
 
@@ -13,7 +14,6 @@ use App\Models\Absensi;
 
 class CapasController extends Controller
 {
-    // ===== HELPER TIER - BIAR OTOMATIS, NGGAK PERLU NGETIK MANUAL LAGI =====
     private function tierDariTotal($total, $target = 100000)
     {
         if ($target <= 0) $target = 100000;
@@ -26,8 +26,6 @@ class CapasController extends Controller
 
     private function targetKas($user = null)
     {
-        // Kalau nanti target mau beda per angkatan, ubah di sini aja
-        // Contoh: return 200000 untuk angkatan 2024, dst.
         return 100000;
     }
 
@@ -40,19 +38,43 @@ class CapasController extends Controller
                 $anggota = Anggota::where('user_id', $user->id)->first();
             }
         } catch (\Exception $e) { $anggota = null; }
+
         $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->nama_lengkap ?? $user->name ?? $user->username ?? 'CAPAS';
         $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? $user->angkatan ?? '2023';
-        if(!$anggota){
-            $anggota = (object)['foto' => $user->foto ?? null,'nis' => $user->nis ?? $user->email ?? '-','nama' => $namaLengkap];
+
+        if (!$anggota) {
+            $anggota = (object)['foto' => $user->foto ?? null, 'nis' => $user->nis ?? $user->email ?? '-', 'nama' => $namaLengkap];
         }
+
+        $totalPps = 0;
+        $totalPpl = 0;
+        $totalCapasSeangkatan = 1;
+        $totalCapas = 1;
+        $totalAnggota = 1;
+
         try {
-            $idsNonAktif = Anggota::where('angkatan', $angkatanFix)->where('status','Non-Aktif')->pluck('user_id');
+            $idsNonAktif = Schema::hasTable('anggotas')
+                ? Anggota::where('angkatan', $angkatanFix)->where('status', 'Non-Aktif')->pluck('user_id')
+                : collect();
+
+            $totalPps = User::where('angkatan_masuk', $angkatanFix)->where('role_id', 2)->whereNotIn('id', $idsNonAktif)->count();
+            $totalPpl = User::where('angkatan_masuk', $angkatanFix)->where('role_id', 3)->whereNotIn('id', $idsNonAktif)->count();
             $totalCapasSeangkatan = User::where('angkatan_masuk', $angkatanFix)->where('role_id', 5)->whereNotIn('id', $idsNonAktif)->count();
-            if($totalCapasSeangkatan == 0){ $totalCapasSeangkatan = 1; }
+            if ($totalCapasSeangkatan == 0) { $totalCapasSeangkatan = 1; }
+            $totalCapas = $totalCapasSeangkatan;
+            $totalAnggota = $totalPps + $totalPpl + $totalCapasSeangkatan;
         } catch (\Exception $e) {
-            try { $totalCapasSeangkatan = Anggota::where('angkatan', $angkatanFix)->whereHas('user', fn($q) => $q->where('role_id', 5))->count(); }
-            catch (\Exception $e2) { $totalCapasSeangkatan = 1; }
+            try {
+                $totalCapasSeangkatan = Anggota::where('angkatan', $angkatanFix)->whereHas('user', fn($q) => $q->where('role_id', 5))->count();
+                $totalCapas = $totalCapasSeangkatan ?: 1;
+                $totalAnggota = $totalPps + $totalPpl + $totalCapas;
+            } catch (\Exception $e2) {
+                $totalCapasSeangkatan = 1;
+                $totalCapas = 1;
+                $totalAnggota = 1;
+            }
         }
+
         try {
             if (!Schema::hasTable('kas')) { $statusKas = 'Belum Ada Data'; }
             else {
@@ -64,6 +86,7 @@ class CapasController extends Controller
                 }
             }
         } catch (\Exception $e) { $statusKas = 'Belum Ada Data'; }
+
         try {
             if (!Schema::hasTable('absensis')) { $persenAbsen = 0; }
             else {
@@ -75,7 +98,10 @@ class CapasController extends Controller
                 }
             }
         } catch (\Exception $e) { $persenAbsen = 0; }
-        return view('capas.dashboard', compact('namaLengkap','angkatanFix','anggota','totalCapasSeangkatan','statusKas','persenAbsen'));
+
+        $perluLengkapiBiodata = ProfileController::perluLengkapi($user);
+
+        return view('capas.dashboard', compact('namaLengkap', 'angkatanFix', 'anggota', 'totalCapasSeangkatan', 'totalCapas', 'totalPps', 'totalPpl', 'totalAnggota', 'statusKas', 'persenAbsen', 'perluLengkapiBiodata'));
     }
 
     public function idc()
@@ -85,8 +111,8 @@ class CapasController extends Controller
         try { if (Schema::hasTable('anggotas')) { $anggota = Anggota::where('user_id', $user->id)->first(); } } catch (\Exception $e) { $anggota = null; }
         $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->nama_lengkap ?? $user->name ?? $user->username ?? 'CAPAS';
         $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? $user->angkatan ?? '2023';
-        if(!$anggota){ $anggota = (object)['foto' => $user->foto ?? null,'nis' => $user->nis ?? $user->email ?? '-','nama' => $namaLengkap]; }
-        return view('capas.idc', compact('namaLengkap','angkatanFix','anggota'));
+        if (!$anggota) { $anggota = (object)['foto' => $user->foto ?? null, 'nis' => $user->nis ?? $user->email ?? '-', 'nama' => $namaLengkap]; }
+        return view('capas.idc', compact('namaLengkap', 'angkatanFix', 'anggota'));
     }
 
     public function updateFotoIdc(Request $request)
@@ -98,12 +124,11 @@ class CapasController extends Controller
             $path = $request->file('foto')->store('foto_idc', 'public');
             if ($anggota) { $anggota->foto = $path; $anggota->save(); }
             $user->foto = $path; $user->save();
-            return response()->json(['success' => true, 'foto_url' => asset('storage/'.$path)]);
+            return response()->json(['success' => true, 'foto_url' => asset('storage/' . $path)]);
         }
         return response()->json(['success' => false], 400);
     }
 
-    // ===== ANGGOTA - AUTO DETECT CAPAS + PPL + PPS =====
     public function anggota(Request $r)
     {
         $user = Auth::user();
@@ -136,22 +161,22 @@ class CapasController extends Controller
         $filterAngkatan = $r->get('angkatan', $angkatanFix);
         if ($filterAngkatan === '' || $filterAngkatan === null) $filterAngkatan = 'semua';
 
-        $listAngkatan = User::whereIn('role_id', [2,3,5])
+        $listAngkatan = User::whereIn('role_id', [2, 3, 5])
             ->whereNotNull('angkatan_masuk')
             ->distinct()->pluck('angkatan_masuk')->filter()->sort()->reverse()->values();
         if ($listAngkatan->isEmpty()) {
             $listAngkatan = Anggota::distinct()->pluck('angkatan')->filter()->sort()->reverse()->values();
         }
 
-        $getByRole = function($roleId) use ($filterAngkatan, $search, $filterStatus, $user) {
+        $getByRole = function ($roleId) use ($filterAngkatan, $search, $filterStatus, $user) {
             $q = User::where('role_id', $roleId);
 
             if ($filterAngkatan && $filterAngkatan != 'semua') {
                 $idsDariAnggota = Anggota::where('angkatan', $filterAngkatan)->pluck('user_id');
-                $q->where(function($qq) use ($roleId, $filterAngkatan, $idsDariAnggota) {
+                $q->where(function ($qq) use ($roleId, $filterAngkatan, $idsDariAnggota) {
                     $qq->where('role_id', $roleId)->where('angkatan_masuk', $filterAngkatan);
                     if ($idsDariAnggota->count()) {
-                        $qq->orWhere(function($q2) use ($roleId, $idsDariAnggota) {
+                        $qq->orWhere(function ($q2) use ($roleId, $idsDariAnggota) {
                             $q2->where('role_id', $roleId)->whereIn('id', $idsDariAnggota);
                         });
                     }
@@ -161,7 +186,7 @@ class CapasController extends Controller
             $users = $q->orderBy('username')->get();
             $map = Anggota::whereIn('user_id', $users->pluck('id'))->get()->keyBy('user_id');
 
-            return $users->map(function($u) use ($map, $user) {
+            return $users->map(function ($u) use ($map, $user) {
                 $a = $map->get($u->id);
                 $status = $a?->status ?? 'Aktif';
                 $isMe = $u->id === $user->id;
@@ -178,9 +203,9 @@ class CapasController extends Controller
                     'foto' => $a?->foto ?? $u->foto,
                     'user' => $u,
                 ];
-            })->filter(function($item) use ($search, $filterStatus) {
+            })->filter(function ($item) use ($search, $filterStatus) {
                 if ($filterStatus != 'semua' && strtolower(trim($item->status)) != strtolower(trim($filterStatus))) return false;
-                if ($search !== '' && !str_contains(strtolower($item->nama.' '.$item->username), strtolower($search))) return false;
+                if ($search !== '' && !str_contains(strtolower($item->nama . ' ' . $item->username), strtolower($search))) return false;
                 return true;
             })->values();
         };
@@ -196,14 +221,13 @@ class CapasController extends Controller
         $pps = $ppsList;
 
         return view('capas.anggota', compact(
-            'anggotaList','anggotas','namaLengkap','angkatanFix',
-            'listAngkatan','filterAngkatan','search',
-            'capasList','pplList','ppsList','filterStatus',
-            'capas','ppl','pps'
+            'anggotaList', 'anggotas', 'namaLengkap', 'angkatanFix',
+            'listAngkatan', 'filterAngkatan', 'search',
+            'capasList', 'pplList', 'ppsList', 'filterStatus',
+            'capas', 'ppl', 'pps'
         ));
     }
 
-    // ===== KAS - TRACK RECORD + AUTO DETEKSI NAIK TIER =====
     public function kas(Request $r)
     {
         $user = Auth::user();
@@ -222,28 +246,28 @@ class CapasController extends Controller
         $hasKasTable = Schema::hasTable('kas');
         $hasNominal = $hasKasTable && Schema::hasColumn('kas', 'nominal');
         $hasStatus = $hasKasTable && Schema::hasColumn('kas', 'status');
-        $kolomTipe = $hasKasTable && Schema::hasColumn('kas','tipe') ? 'tipe' : ($hasKasTable && Schema::hasColumn('kas','jenis') ? 'jenis' : ($hasKasTable && Schema::hasColumn('kas','kategori') ? 'kategori' : null));
+        $kolomTipe = $hasKasTable && Schema::hasColumn('kas', 'tipe') ? 'tipe' : ($hasKasTable && Schema::hasColumn('kas', 'jenis') ? 'jenis' : ($hasKasTable && Schema::hasColumn('kas', 'kategori') ? 'kategori' : null));
 
-        $listAngkatan = User::whereIn('role_id', [2,3,4,5])
+        $listAngkatan = User::whereIn('role_id', [2, 3, 4, 5])
             ->whereNotNull('angkatan_masuk')
             ->distinct()->pluck('angkatan_masuk')->filter()->sort()->reverse()->values();
 
-        $perAngkatan = $listAngkatan->map(function($angkatan) use ($hasKasTable, $hasNominal, $hasStatus, $kolomTipe) {
-            $idsAngkatan = User::whereIn('role_id', [2,3,4,5])->where('angkatan_masuk', $angkatan)->pluck('id');
-            $jumlah = User::whereIn('role_id', [2,3,5])->where('angkatan_masuk', $angkatan)->count();
+        $perAngkatan = $listAngkatan->map(function ($angkatan) use ($hasKasTable, $hasNominal, $hasStatus, $kolomTipe) {
+            $idsAngkatan = User::whereIn('role_id', [2, 3, 4, 5])->where('angkatan_masuk', $angkatan)->pluck('id');
+            $jumlah = User::whereIn('role_id', [2, 3, 5])->where('angkatan_masuk', $angkatan)->count();
             $masuk = 0; $keluar = 0;
             if ($hasKasTable && $hasNominal && $idsAngkatan->count()) {
                 $q = Kas::whereIn('user_id', $idsAngkatan);
                 if ($hasStatus) $q->where('status', 'lunas');
                 if ($kolomTipe) {
-                    $masuk = (clone $q)->whereIn($kolomTipe, ['masuk','pemasukan','in','iuran'])->sum('nominal');
-                    $keluar = (clone $q)->whereIn($kolomTipe, ['keluar','pengeluaran','out'])->sum('nominal');
+                    $masuk = (clone $q)->whereIn($kolomTipe, ['masuk', 'pemasukan', 'in', 'iuran'])->sum('nominal');
+                    $keluar = (clone $q)->whereIn($kolomTipe, ['keluar', 'pengeluaran', 'out'])->sum('nominal');
                     $masuk += (clone $q)->whereNull($kolomTipe)->sum('nominal');
                 } else {
                     $masuk = (clone $q)->sum('nominal');
                 }
             }
-            return (object)['angkatan'=>$angkatan,'jumlah'=>$jumlah,'total'=>$masuk-$keluar,'masuk'=>$masuk,'keluar'=>$keluar];
+            return (object)['angkatan' => $angkatan, 'jumlah' => $jumlah, 'total' => $masuk - $keluar, 'masuk' => $masuk, 'keluar' => $keluar];
         });
 
         $perFiltered = $filterAngkatan != 'semua' ? $perAngkatan->where('angkatan', $filterAngkatan) : $perAngkatan;
@@ -253,7 +277,7 @@ class CapasController extends Controller
 
         $trackRecord = collect();
         if ($hasKasTable) {
-            $queryUser = User::whereIn('role_id', [2,3,4,5]);
+            $queryUser = User::whereIn('role_id', [2, 3, 4, 5]);
             if ($filterAngkatan != 'semua') $queryUser->where('angkatan_masuk', $filterAngkatan);
             if ($filterRole != 'semua') {
                 $roleId = $filterRole == 'PPS' ? 2 : ($filterRole == 'PPL' ? 3 : ($filterRole == 'ALUMNI' ? 4 : 5));
@@ -264,7 +288,7 @@ class CapasController extends Controller
             $userIds = $usersFiltered->pluck('id');
             $anggotaMap = Anggota::whereIn('user_id', $userIds)->get()->keyBy('user_id');
 
-            $q = Kas::whereIn('user_id', $userIds)->orderBy('created_at','desc');
+            $q = Kas::whereIn('user_id', $userIds)->orderBy('created_at', 'desc');
 
             if ($search !== '') {
                 $s = $search;
@@ -272,13 +296,13 @@ class CapasController extends Controller
                 $idsUserSearch = $userMap->filter(fn($u) => str_contains(strtolower($u->username ?? ''), strtolower($s)))->keys();
                 $idsNama = $idsSearch->merge($idsUserSearch)->unique()->values();
 
-                $q->where(function($qq) use ($s, $idsNama) {
+                $q->where(function ($qq) use ($s, $idsNama) {
                     if ($idsNama->count()) $qq->whereIn('user_id', $idsNama);
                     $qq->orWhere('keterangan', 'like', "%{$s}%")
-                       ->orWhere('metode_pembayaran', 'like', "%{$s}%")
-                       ->orWhere('status', 'like', "%{$s}%")
-                       ->orWhere('bulan', 'like', "%{$s}%")
-                       ->orWhere('nominal', 'like', "%{$s}%");
+                        ->orWhere('metode_pembayaran', 'like', "%{$s}%")
+                        ->orWhere('status', 'like', "%{$s}%")
+                        ->orWhere('bulan', 'like', "%{$s}%")
+                        ->orWhere('nominal', 'like', "%{$s}%");
                     if (Schema::hasColumn('kas', 'alasan_penolakan')) {
                         $qq->orWhere('alasan_penolakan', 'like', "%{$s}%");
                     }
@@ -292,7 +316,7 @@ class CapasController extends Controller
                 $q->where($kolomTipe, $filterTipe);
             }
 
-            $trackRecord = $q->limit(100)->get()->map(function($k) use ($userMap, $anggotaMap){
+            $trackRecord = $q->limit(100)->get()->map(function ($k) use ($userMap, $anggotaMap) {
                 $u = $userMap->get($k->user_id);
                 $a = $anggotaMap->get($k->user_id);
                 $k->nama_pembayar = $a?->nama_lengkap ?? $a?->nama ?? $u?->username ?? 'Unknown';
@@ -306,12 +330,12 @@ class CapasController extends Controller
 
         if ($myKasQuery && $search !== '') {
             $s = $search;
-            $myKasQuery->where(function($qq) use ($s) {
+            $myKasQuery->where(function ($qq) use ($s) {
                 $qq->where('keterangan', 'like', "%{$s}%")
-                   ->orWhere('metode_pembayaran', 'like', "%{$s}%")
-                   ->orWhere('status', 'like', "%{$s}%")
-                   ->orWhere('bulan', 'like', "%{$s}%")
-                   ->orWhere('nominal', 'like', "%{$s}%");
+                    ->orWhere('metode_pembayaran', 'like', "%{$s}%")
+                    ->orWhere('status', 'like', "%{$s}%")
+                    ->orWhere('bulan', 'like', "%{$s}%")
+                    ->orWhere('nominal', 'like', "%{$s}%");
                 if (Schema::hasColumn('kas', 'alasan_penolakan')) {
                     $qq->orWhere('alasan_penolakan', 'like', "%{$s}%");
                 }
@@ -326,56 +350,47 @@ class CapasController extends Controller
         }
 
         $myKas = $myKasQuery ? $myKasQuery->get() : collect();
-        $myTotal = $hasNominal ? $myKas->where('status','lunas')->sum('nominal') : 0;
-        $myPending = $hasNominal ? $myKas->where('status','pending')->sum('nominal') : 0;
+        $myTotal = $hasNominal ? $myKas->where('status', 'lunas')->sum('nominal') : 0;
+        $myPending = $hasNominal ? $myKas->where('status', 'pending')->sum('nominal') : 0;
         $myStatus = 'Belum Ada Data';
         if ($myKas->count()) {
-            if ($myPending > 0) $myStatus = 'Pending Rp'.number_format($myPending,0,',','.');
-            elseif ($myKas->where('status','lunas')->count() == $myKas->count()) $myStatus = 'Lunas';
+            if ($myPending > 0) $myStatus = 'Pending Rp' . number_format($myPending, 0, ',', '.');
+            elseif ($myKas->where('status', 'lunas')->count() == $myKas->count()) $myStatus = 'Lunas';
             else $myStatus = 'Belum Lunas';
         }
         $listKas = $myKas;
 
-        // ===== INI INTINYA: AUTO DETEKSI NAIK TIER =====
         $target = $this->targetKas($user);
         $tierSekarang = $this->tierDariTotal($myTotal, $target);
 
-        // Kalau ada flash dari ACC (PPL/PPS/Dev), itu yang diprioritaskan
-        // Kalau nggak ada, cek dari session last_tier
         if (!session()->has('naik_tier')) {
-            $keyLast = 'last_tier_user_'.$user->id;
+            $keyLast = 'last_tier_user_' . $user->id;
             $tierTerakhir = session($keyLast, null);
 
-            // Kalau belum pernah disimpan, simpan aja tanpa animasi (kunjungan pertama)
             if ($tierTerakhir === null) {
                 session([$keyLast => $tierSekarang]);
             } elseif ($tierTerakhir !== $tierSekarang) {
-                // Urutan tier biar tau naik atau turun
-                $urutan = ['BRONZE'=>0,'SILVER'=>1,'GOLD'=>2,'BLACK'=>3];
+                $urutan = ['BRONZE' => 0, 'SILVER' => 1, 'GOLD' => 2, 'BLACK' => 3];
                 $naik = ($urutan[$tierSekarang] ?? 0) > ($urutan[$tierTerakhir] ?? 0);
                 if ($naik) {
-                    // Ini yang dibaca blade buat animasi morph kartu
                     session()->flash('naik_tier', $tierSekarang);
                     session()->flash('tier_lama', $tierTerakhir);
                 }
-                // Update tier terakhir, biar besok nggak animasi lagi
                 session([$keyLast => $tierSekarang]);
             }
         } else {
-            // Kalau ada flash dari ACC, sekalian update last_tier biar nggak double animasi
-            session(['last_tier_user_'.$user->id => $tierSekarang]);
+            session(['last_tier_user_' . $user->id => $tierSekarang]);
         }
 
         return view('capas.kas', compact(
-            'listKas','namaLengkap','angkatanFix',
-            'perAngkatan','listAngkatan','totalMasuk','totalKeluar','saldo',
-            'myKas','myTotal','myStatus','myPending','trackRecord',
-            'filterAngkatan','filterRole','search','filterTipe',
+            'listKas', 'namaLengkap', 'angkatanFix',
+            'perAngkatan', 'listAngkatan', 'totalMasuk', 'totalKeluar', 'saldo',
+            'myKas', 'myTotal', 'myStatus', 'myPending', 'trackRecord',
+            'filterAngkatan', 'filterRole', 'search', 'filterTipe',
             'target'
         ));
     }
 
-    // CAPAS BOLEH SETOR, TAPI CUMA BUAT DIRI SENDIRI + STATUS PENDING
     public function kasStore(Request $r)
     {
         $user = Auth::user();
@@ -395,8 +410,8 @@ class CapasController extends Controller
             'nominal' => $r->nominal,
             'status' => 'pending',
         ];
-        if (Schema::hasColumn('kas', 'keterangan')) $data['keterangan'] = $r->keterangan ?? 'Setoran Kas - '.$user->username;
-        elseif (Schema::hasColumn('kas', 'deskripsi')) $data['deskripsi'] = $r->keterangan ?? 'Setoran Kas - '.$user->username;
+        if (Schema::hasColumn('kas', 'keterangan')) $data['keterangan'] = $r->keterangan ?? 'Setoran Kas - ' . $user->username;
+        elseif (Schema::hasColumn('kas', 'deskripsi')) $data['deskripsi'] = $r->keterangan ?? 'Setoran Kas - ' . $user->username;
         if (Schema::hasColumn('kas', 'bulan')) $data['bulan'] = $r->bulan ?? now()->format('Y-m');
         if (Schema::hasColumn('kas', 'tipe')) $data['tipe'] = 'masuk';
         elseif (Schema::hasColumn('kas', 'jenis')) $data['jenis'] = 'masuk';
@@ -410,28 +425,31 @@ class CapasController extends Controller
                 'kas_id' => $kas->id,
                 'user_id' => $user->id,
                 'aksi' => 'setor',
-                'keterangan' => 'CAPAS setor kas Rp'.number_format($r->nominal,0,',','.').' - '.$r->metode_pembayaran.' - menunggu validasi',
+                'keterangan' => 'CAPAS setor kas Rp' . number_format($r->nominal, 0, ',', '.') . ' - ' . $r->metode_pembayaran . ' - menunggu validasi',
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
         }
 
-        return redirect()->route('capas.kas')->with('success', 'Setoran kas Rp'.number_format($r->nominal,0,',','.').' terkirim, menunggu validasi PPS / PPL.');
+        return redirect()->route('capas.kas')->with('success', 'Setoran kas Rp' . number_format($r->nominal, 0, ',', '.') . ' terkirim, menunggu validasi PPS / PPL.');
     }
 
-    public function absensi() {
+    public function absensi()
+    {
         $user = Auth::user();
         $anggota = Anggota::where('user_id', $user->id)->first();
         $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->username ?? 'CAPAS';
         $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? '2023';
         $riwayatAbsen = Schema::hasTable('absensis') ? Absensi::where('user_id', $user->id)->latest()->get() : collect([]);
-        return view('capas.absensi', compact('riwayatAbsen','namaLengkap','anggota'));
+        return view('capas.absensi', compact('riwayatAbsen', 'namaLengkap', 'anggota'));
     }
-    public function materi() {
+
+    public function materi()
+    {
         $user = Auth::user();
         $anggota = Anggota::where('user_id', $user->id)->first();
         $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->username ?? 'CAPAS';
         $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? '2023';
-        return view('capas.materi', compact('namaLengkap','angkatanFix'));
+        return view('capas.materi', compact('namaLengkap', 'angkatanFix'));
     }
 }
