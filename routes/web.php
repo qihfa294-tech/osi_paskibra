@@ -25,6 +25,14 @@ Route::post('/register', [RegisterController::class, 'sendLink'])->name('registe
 Route::get('/register/{token}', [RegisterController::class, 'showRegisterForm'])->name('register.form');
 Route::post('/register/{token}', [RegisterController::class, 'register'])->name('register.submit');
 
+// ROUTE UTAMA - PERTAMA DIBUKA LANGSUNG LOGIN
+Route::get('/', function(){
+    if (Auth::check()) {
+        return redirect()->route('dashboard');
+    }
+    return redirect()->route('login');
+});
+
 Route::middleware('auth')->group(function(){
     Route::post('/profil/update', [App\Http\Controllers\ProfileController::class, 'update'])->name('profil.update');
 
@@ -39,7 +47,6 @@ Route::middleware('auth')->group(function(){
             default => redirect()->route('dev.dashboard')
         };
     })->name('dashboard');
-    Route::get('/', fn() => redirect('/dashboard'));
 
     Route::middleware('role:1')->prefix('dev')->name('dev.')->group(function(){
         Route::get('/dashboard', [DeveloperController::class,'dashboard'])->name('dashboard');

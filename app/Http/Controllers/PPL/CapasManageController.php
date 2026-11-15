@@ -1,6 +1,8 @@
 <?php
-namespace App\Http\Controllers;
 
+namespace App\Http\Controllers\PPL;
+
+use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Schema;
@@ -9,8 +11,68 @@ use App\Models\Anggota;
 use App\Models\Kas;
 use App\Models\Absensi;
 
-class CapasController extends Controller
+class CapasManageController extends Controller
 {
+    // === METHOD BUAT PPL - YANG DIPANGGIL DI web.php ===
+    // GET /ppl/capas/{id}
+    public function show($id)
+    {
+        $anggota = Anggota::where('user_id', $id)->first();
+        $user = User::findOrFail($id);
+        $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->username;
+        $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? '2023';
+        $listKas = Schema::hasTable('kas') ? Kas::where('user_id', $id)->latest()->get() : collect();
+        $riwayatAbsen = Schema::hasTable('absensis') ? Absensi::where('user_id', $id)->latest()->get() : collect();
+        return view('ppl.capas-show', compact('user','anggota','namaLengkap','angkatanFix','listKas','riwayatAbsen'));
+    }
+
+    // PUT /ppl/capas/{id}/jabatan
+    public function updateJabatan(Request $request, $id)
+    {
+        $request->validate(['jabatan' => 'nullable|string|max:100']);
+        $user = User::findOrFail($id);
+        $user->jabatan = $request->jabatan;
+        $user->save();
+        $anggota = Anggota::where('user_id', $id)->first();
+        if ($anggota) { $anggota->jabatan = $request->jabatan; $anggota->save(); }
+        return back()->with('success', 'Jabatan berhasil diupdate.');
+    }
+
+    // POST /ppl/capas/absensi
+    public function absensiStore(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|exists:users,id',
+            'tanggal' => 'required|date',
+            'status' => 'required|string',
+        ]);
+        Absensi::create([
+            'user_id' => $request->user_id,
+            'tanggal' => $request->tanggal,
+            'status' => $request->status,
+            'keterangan' => $request->keterangan,
+        ]);
+        return back()->with('success', 'Absensi berhasil disimpan.');
+    }
+
+    // POST /ppl/capas/kas
+    public function kasStore(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|exists:users,id',
+            'nominal' => 'required|numeric|min:0',
+        ]);
+        Kas::create([
+            'user_id' => $request->user_id,
+            'nominal' => $request->nominal,
+            'status' => $request->status ?? 'lunas',
+            'tipe' => $request->tipe ?? 'masuk',
+            'keterangan' => $request->keterangan,
+        ]);
+        return back()->with('success', 'Kas berhasil disimpan.');
+    }
+
+    // === COPY DARI FILE LAMA LU - BIAR GAK ADA YANG HILANG ===
     public function dashboard()
     {
         $user = Auth::user();
@@ -120,35 +182,25 @@ class CapasController extends Controller
         return view('capas.anggota', compact('anggotaList','anggotas','namaLengkap','angkatanFix','listAngkatan','filterAngkatan','search'));
     }
 
-    // ===== KAS - TRACK RECORD SEMUA ANGKATAN: PPL + PPS + ALUMNI =====
-    // CAPAS cuma liat, gak bisa nambah. Data gak ilang pas naik jadi ALUMNI karena kunci nya user_id + angkatan_masuk, bukan role_id.
     public function kas(Request $r)
     {
         $user = Auth::user();
         $anggota = Anggota::where('user_id', $user->id)->first();
         $namaLengkap = $anggota?->nama_lengkap ?? $anggota?->nama ?? $user->username ?? 'CAPAS';
         $angkatanFix = $anggota?->angkatan ?? $user->angkatan_masuk ?? '2023';
-
         $filterAngkatan = $r->get('angkatan', 'semua');
         $filterRole = $r->get('role', 'semua');
         $search = $r->get('search');
-
         $hasKasTable = Schema::hasTable('kas');
         $hasNominal = $hasKasTable && Schema::hasColumn('kas', 'nominal');
         $hasStatus = $hasKasTable && Schema::hasColumn('kas', 'status');
         $hasTipe = $hasKasTable && Schema::hasColumn('kas', 'tipe');
         $kolomTipe = $hasTipe ? 'tipe' : (Schema::hasColumn('kas','jenis') ? 'jenis' : (Schema::hasColumn('kas','kategori') ? 'kategori' : null));
         $hasKolomTipe = $kolomTipe !== null;
-
-        // 1. LIST ANGKATAN DARI PPL+PPS+ALUMNI - BUKAN CAPAS DOANG
-        // Kalo angkatan 2020 udah lulus semua jadi ALUMNI, tetep muncul di sini
         $listAngkatan = User::whereIn('role_id', [2,3,4])
             ->whereNotNull('angkatan_masuk')
             ->distinct()->pluck('angkatan_masuk')->filter()->sort()->reverse()->values();
-
-        // 2. REKAP PER ANGKATAN
         $perAngkatan = $listAngkatan->map(function($angkatan) use ($hasKasTable, $hasNominal, $hasStatus, $hasKolomTipe, $kolomTipe) {
-            // Kunci anti-hilang: ambil user_id dari role 2,3,4 sekaligus di angkatan yang sama
             $idsAngkatan = User::whereIn('role_id', [2,3,4])->where('angkatan_masuk', $angkatan)->pluck('id');
             $jumlah = User::whereIn('role_id', [2,3])->where('angkatan_masuk', $angkatan)->count();
             $masuk = 0; $keluar = 0;
@@ -165,13 +217,10 @@ class CapasController extends Controller
             }
             return (object)['angkatan'=>$angkatan,'jumlah'=>$jumlah,'total'=>$masuk-$keluar,'masuk'=>$masuk,'keluar'=>$keluar];
         });
-
         $perFiltered = $filterAngkatan != 'semua' ? $perAngkatan->where('angkatan', $filterAngkatan) : $perAngkatan;
         $totalMasuk = $perFiltered->sum('masuk');
         $totalKeluar = $perFiltered->sum('keluar');
         $saldo = $totalMasuk - $totalKeluar;
-
-        // 3. TRACK RECORD SEMUA ANGKATAN - INTINYA DI SINI
         $trackRecord = collect();
         if ($hasKasTable) {
             $queryUser = User::whereIn('role_id', [2,3,4]);
@@ -184,7 +233,6 @@ class CapasController extends Controller
             $userMap = $usersFiltered->keyBy('id');
             $userIds = $usersFiltered->pluck('id');
             $anggotaMap = Anggota::whereIn('user_id', $userIds)->get()->keyBy('user_id');
-
             $q = Kas::whereIn('user_id', $userIds)->orderBy('created_at','desc');
             if ($search) {
                 $idsSearch = $anggotaMap->filter(fn($a) => str_contains(strtolower($a->nama_lengkap ?? $a->nama ?? ''), strtolower($search)))->keys();
@@ -200,8 +248,6 @@ class CapasController extends Controller
                 return $k;
             });
         }
-
-        // 4. KAS KAMU SENDIRI (CAPAS) - kecil aja di atas
         $myKas = $hasKasTable ? Kas::where('user_id', $user->id)->latest()->get() : collect();
         $myTotal = $hasNominal ? $myKas->where('status','lunas')->sum('nominal') : 0;
         $myStatus = 'Belum Ada Data';
@@ -211,7 +257,6 @@ class CapasController extends Controller
             if ($hasStatus && $myKas->where('status','lunas')->count() == $myKas->count()) $myStatus = 'Lunas';
         }
         $listKas = $myKas;
-
         return view('capas.kas', compact(
             'listKas','namaLengkap','angkatanFix',
             'perAngkatan','listAngkatan','totalMasuk','totalKeluar','saldo',
